@@ -7,6 +7,7 @@ import { map, startWith } from 'rxjs/operators';
 import { MovimientoKardex, Producto, Proveedor } from './product.model';
 import Swal from 'sweetalert2';
 
+
 @Component({
   selector: 'app-products',
   standalone: true,
@@ -129,35 +130,68 @@ export class ProductsComponent implements OnInit {
   }
 
   // --- Lógica de Productos ---
+  // --- Acciones Producto ---
   guardarProducto() {
+    // 1. Validar formulario
     if (this.productoForm.invalid) {
       this.productoForm.markAllAsTouched();
       return;
     }
-    const datosProducto = this.productoForm.value;
+
+    const datos = this.productoForm.value;
+    
+    // 2. Verificar si es EDICIÓN o CREACIÓN
     if (this.productoEnEdicion) {
-      const productoActualizado: Producto = { ...this.productoEnEdicion, ...datosProducto };
-      this.productService.updateProducto(productoActualizado);
+      const productoActualizado = { ...this.productoEnEdicion, ...datos };
+      
+      // CASO EDITAR: Usamos .subscribe()
+      this.productService.updateProducto(productoActualizado).subscribe({
+        next: () => {
+          this.mostrarToast('Producto actualizado correctamente');
+          this.cambiarVista('listaProductos');
+        },
+        error: (err) => {
+          console.error(err);
+          Swal.fire('Error', 'No se pudo actualizar el producto', 'error');
+        }
+      });
+
     } else {
-      this.productService.addProducto(datosProducto);
+      // CASO CREAR: Usamos .subscribe()
+      this.productService.addProducto(datos).subscribe({
+        next: () => {
+          this.mostrarToast('Producto creado con éxito');
+          this.cambiarVista('listaProductos');
+        },
+        error: (err) => {
+          console.error(err);
+          Swal.fire('Error', 'No se pudo crear el producto', 'error');
+        }
+      });
     }
-    this.mostrarToast('Producto guardado correctamente');
-    this.cambiarVista('listaProductos');
   }
 
-  borrarProducto(id: string) {
+borrarProducto(id: string | number) { 
     Swal.fire({
       title: '¿Estás seguro?',
       text: "No podrás revertir esto",
       icon: 'warning',
       showCancelButton: true,
-      confirmButtonColor: '#3085d6',
-      cancelButtonColor: '#d33',
-      confirmButtonText: 'Sí, ¡bórralo!'
+      confirmButtonColor: '#d33',
+      cancelButtonColor: '#3085d6',
+      confirmButtonText: 'Sí, borrar'
     }).then((result) => {
       if (result.isConfirmed) {
-        this.productService.deleteProducto(id);
-        Swal.fire('¡Borrado!', 'El producto ha sido eliminado.', 'success');
+        // AQUÍ AGREGAMOS EL .subscribe()
+        this.productService.deleteProducto(id).subscribe({
+          next: () => {
+            Swal.fire('¡Borrado!', 'El producto ha sido eliminado.', 'success');
+          },
+          error: (err) => {
+            console.error(err);
+            Swal.fire('Error', 'No se pudo borrar el producto', 'error');
+          }
+        });
       }
     });
   }
@@ -234,6 +268,7 @@ export class ProductsComponent implements OnInit {
     });
   }
 
+  
   // --- Helpers ---
   getNombreProveedor(proveedorId: string, proveedores: Proveedor[] | null): string {
     if (!proveedores) return '...';

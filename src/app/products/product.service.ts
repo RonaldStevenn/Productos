@@ -1,172 +1,162 @@
 import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable, of } from 'rxjs';
-import { delay, map } from 'rxjs/operators';
-import { MovimientoKardex, Producto, Proveedor } from './product.model';
+import { HttpClient } from '@angular/common/http';
+import { BehaviorSubject, Observable, tap, map } from 'rxjs';
+import { Producto, Proveedor, MovimientoKardex } from './product.model';
 import * as XLSX from 'xlsx';
 
 @Injectable({
   providedIn: 'root'
 })
 export class ProductService {
-  private proveedoresSubject = new BehaviorSubject<Proveedor[]>([
-    { id: 'prov-1', nombre: 'Samsung Electronics', telefono: '123-456-7890', web: 'samsung.com' },
-    { id: 'prov-2', nombre: 'Distribuidora Ronald', telefono: '098-765-4321' },
-    { id: 'prov-3', nombre: 'Tech Supplies Inc.', telefono: '555-555-5555', web: 'techsupplies.com' }
-  ]);
-  public proveedores$ = this.proveedoresSubject.asObservable();
+  private apiUrl = 'http://localhost:3000/api'; // Asegúrate que tu backend corre aquí
 
+  // Stores en memoria
   private productosSubject = new BehaviorSubject<Producto[]>([]);
   public productos$ = this.productosSubject.asObservable();
+
+  private proveedoresSubject = new BehaviorSubject<Proveedor[]>([]);
+  public proveedores$ = this.proveedoresSubject.asObservable();
 
   private movimientosSubject = new BehaviorSubject<MovimientoKardex[]>([]);
   public movimientos$ = this.movimientosSubject.asObservable();
 
-  constructor() { }
-
-  private registrarMovimiento(descripcion: string, tipo: 'ENTRADA' | 'SALIDA' | 'SISTEMA', cantidad?: number) {
-    const nuevoMovimiento: MovimientoKardex = {
-      id: `mov-${new Date().getTime()}`,
-      fecha: new Date(),
-      descripcion,
-      tipo,
-      cantidad
-    };
-    const movimientosActuales = this.movimientosSubject.getValue();
-    this.movimientosSubject.next([nuevoMovimiento, ...movimientosActuales]);
+  constructor(private http: HttpClient) {
+    this.recargarDatos().subscribe(); // Importante: Iniciar carga de datos
   }
 
-  // --- Métodos de Proveedores ---
-  getProveedores(): Observable<Proveedor[]> {
-    return this.proveedores$;
-  }
+  // === CARGA DE DATOS ===
+  recargarDatos(): Observable<boolean> {
+    // Cargar Proveedores
+    this.http.get<any[]>(`${this.apiUrl}/proveedores`).subscribe(data => {
+      this.proveedoresSubject.next(data);
+    });
 
-  addProveedor(proveedor: Omit<Proveedor, 'id'>) {
-    const nuevoProveedor: Proveedor = {
-      ...proveedor,
-      id: `prov-${new Date().getTime()}`
-    };
-    const proveedoresActuales = this.proveedoresSubject.getValue();
-    this.proveedoresSubject.next([...proveedoresActuales, nuevoProveedor]);
-    this.registrarMovimiento(`Se creó el proveedor ${nuevoProveedor.nombre}`, 'SISTEMA');
-  }
+    // Cargar Kardex
+    this.http.get<any[]>(`${this.apiUrl}/kardex`).subscribe(data => {
+      this.movimientosSubject.next(data);
+    });
 
-  updateProveedor(proveedorActualizado: Proveedor) {
-    const proveedores = this.proveedoresSubject.getValue();
-    const index = proveedores.findIndex(p => p.id === proveedorActualizado.id);
-    if (index !== -1) {
-      proveedores[index] = proveedorActualizado;
-      this.proveedoresSubject.next([...proveedores]);
-      this.registrarMovimiento(`Se actualizó el proveedor ${proveedorActualizado.nombre}`, 'SISTEMA');
-    }
-  }
-
-  deleteProveedor(id: string) {
-    const proveedoresActuales = this.proveedoresSubject.getValue();
-    const proveedorEliminado = proveedoresActuales.find(p => p.id === id);
-    if (proveedorEliminado) {
-      const proveedoresFiltrados = proveedoresActuales.filter(p => p.id !== id);
-      this.proveedoresSubject.next(proveedoresFiltrados);
-      this.registrarMovimiento(`Se eliminó el proveedor ${proveedorEliminado.nombre}`, 'SISTEMA');
-    }
-  }
-
-  // --- Métodos de Productos ---
-  getProductos(): Observable<Producto[]> {
-    return this.productos$.pipe(
-      map(productos => productos.map(p => ({
-        ...p,
-        ganancia: (p.precioVenta - p.costoCompra) * p.stock
-      })))
+    // Cargar Productos (y mapear nombres de BD a Frontend)
+    return this.http.get<any[]>(`${this.apiUrl}/productos`).pipe(
+      map(dbData => dbData.map(p => this.mapToClient(p))),
+      tap(productos => this.productosSubject.next(productos)),
+      map(() => true)
     );
   }
 
-  addProducto(producto: Omit<Producto, 'id' | 'ganancia'>) {
-    const nuevoProducto: Producto = {
-      ...producto,
-      id: `prod-${new Date().getTime()}`
+  // --- MAPEOS (Traducción Angular <-> MySQL) ---
+  
+  // De MySQL (snake_case) a Angular (camelCase)
+  private mapToClient(data: any): Producto {
+    return {
+      id: data.id,
+      nombre: data.nombre,
+      proveedorId: data.proveedor_id, // Ojo al guion bajo
+      costoCompra: data.costo_compra,
+      precioVenta: data.precio_venta,
+      stock: data.stock,
+      categoria: data.categoria,
+      imagenUrl: data.imagen_url,
+      ganancia: (data.precio_venta - data.costo_compra) * data.stock
     };
-    const productosActuales = this.productosSubject.getValue();
-    this.productosSubject.next([...productosActuales, nuevoProducto]);
-    this.registrarMovimiento(`Se creó el producto ${nuevoProducto.nombre}`, 'ENTRADA', nuevoProducto.stock);
   }
 
-  updateProducto(productoActualizado: Producto) {
-    const productos = this.productosSubject.getValue();
-    const productoOriginal = productos.find(p => p.id === productoActualizado.id);
-    const index = productos.findIndex(p => p.id === productoActualizado.id);
-
-    if (index !== -1 && productoOriginal) {
-      const stockAnterior = productoOriginal.stock;
-      const stockNuevo = productoActualizado.stock;
-
-      productos[index] = productoActualizado;
-      this.productosSubject.next([...productos]);
-
-      if (stockNuevo > stockAnterior) {
-        this.registrarMovimiento(`Ajuste de stock para ${productoActualizado.nombre}`, 'ENTRADA', stockNuevo - stockAnterior);
-      } else if (stockNuevo < stockAnterior) {
-        this.registrarMovimiento(`Ajuste de stock para ${productoActualizado.nombre}`, 'SALIDA', stockAnterior - stockNuevo);
-      } else {
-        this.registrarMovimiento(`Se actualizó información de ${productoActualizado.nombre}`, 'SISTEMA');
-      }
-    }
+  // De Angular (camelCase) a MySQL (snake_case)
+  private mapToServer(producto: any): any {
+    return {
+      nombre: producto.nombre,
+      proveedor_id: producto.proveedorId,
+      costo_compra: producto.costoCompra,
+      precio_venta: producto.precioVenta,
+      stock: producto.stock,
+      categoria: producto.categoria,
+      imagen_url: producto.imagenUrl
+    };
   }
 
-  deleteProducto(id: string) {
-    const productosActuales = this.productosSubject.getValue();
-    const productoEliminado = productosActuales.find(p => p.id === id);
-    if (productoEliminado) {
-      const productosFiltrados = productosActuales.filter(p => p.id !== id);
-      this.productosSubject.next(productosFiltrados);
-      this.registrarMovimiento(`Se eliminó el producto ${productoEliminado.nombre}`, 'SALIDA', productoEliminado.stock);
-    }
+  // === MÉTODOS CRUD (Con traducción) ===
+
+  getProductos(): Observable<Producto[]> {
+    return this.productos$;
   }
 
-  // --- Métodos de Exportación y Kardex ---
-  limpiarKardex(): void {
-    this.movimientosSubject.next([]);
-    this.registrarMovimiento('Historial depurado', 'SISTEMA');
+  addProducto(producto: any): Observable<any> {
+    const datosBD = this.mapToServer(producto); // Traducir antes de enviar
+    return this.http.post(`${this.apiUrl}/productos`, datosBD).pipe(
+      tap(() => {
+        this.recargarDatos().subscribe(); // Actualizar lista visual
+        this.registrarMovimiento(`Creado: ${producto.nombre}`, 'ENTRADA', producto.stock);
+      })
+    );
   }
 
-  exportarExcel(): void {
-    const proveedores = this.proveedoresSubject.getValue();
-    const dataParaExportar = this.productosSubject.getValue().map(p => {
-      const proveedor = proveedores.find(prov => prov.id === p.proveedorId);
+  updateProducto(producto: Producto): Observable<any> {
+    const datosBD = this.mapToServer(producto);
+    return this.http.put(`${this.apiUrl}/productos/${producto.id}`, datosBD).pipe(
+      tap(() => {
+        this.recargarDatos().subscribe();
+        this.registrarMovimiento(`Editado: ${producto.nombre}`, 'SISTEMA');
+      })
+    );
+  }
+
+  deleteProducto(id: string | number): Observable<any> {
+    return this.http.delete(`${this.apiUrl}/productos/${id}`).pipe(
+      tap(() => {
+        this.recargarDatos().subscribe();
+        this.registrarMovimiento('Producto eliminado', 'SALIDA');
+      })
+    );
+  }
+
+  // === PROVEEDORES ===
+  getProveedores() { return this.proveedores$; }
+
+  addProveedor(prov: any) {
+    this.http.post(`${this.apiUrl}/proveedores`, prov).subscribe(() => this.recargarDatos().subscribe());
+  }
+
+  updateProveedor(prov: Proveedor) {
+    this.http.put(`${this.apiUrl}/proveedores/${prov.id}`, prov).subscribe(() => this.recargarDatos().subscribe());
+  }
+
+  deleteProveedor(id: string | number) {
+    this.http.delete(`${this.apiUrl}/proveedores/${id}`).subscribe(() => this.recargarDatos().subscribe());
+  }
+
+  // === KARDEX & EXCEL ===
+  private registrarMovimiento(descripcion: string, tipo: string, cantidad: number = 0) {
+    this.http.post(`${this.apiUrl}/kardex`, { descripcion, tipo, cantidad, fecha: new Date() }).subscribe();
+  }
+
+  limpiarKardex() {
+    // Si implementaste el endpoint DELETE en el backend, descomenta la siguiente línea:
+    // this.http.delete(`${this.apiUrl}/kardex`).subscribe(() => this.movimientosSubject.next([]));
+    this.movimientosSubject.next([]); // Limpieza visual temporal
+  }
+
+  exportarExcel() {
+    const data = this.productosSubject.getValue().map(p => {
+      // Forzamos 'any' para evitar errores de tipado estricto en el reduce
+      const pAny = p as any;
+      const prov = this.proveedoresSubject.getValue().find(pr => pr.id == p.proveedorId)?.nombre || 'N/A';
       return {
-        'ID Producto': p.id,
-        'Nombre': p.nombre,
-        'Categoría': p.categoria,
-        'Proveedor': proveedor ? proveedor.nombre : 'N/A',
-        'Stock': p.stock,
-        'Costo Compra ($)': p.costoCompra,
-        'Precio Venta ($)': p.precioVenta,
-        'Ganancia Total ($)': (p.precioVenta - p.costoCompra) * p.stock,
-        'URL Imagen': p.imagenUrl || 'Sin imagen'
+        'ID': p.id, 'Producto': p.nombre, 'Categoría': p.categoria, 'Proveedor': prov,
+        'Stock': p.stock, 'Costo': p.costoCompra, 'Venta': p.precioVenta,
+        'Ganancia Total': (p.precioVenta - p.costoCompra) * p.stock
       };
     });
 
-    const ws: XLSX.WorkSheet = XLSX.utils.json_to_sheet(dataParaExportar);
-
-    // Ajustar ancho de columnas
-// Ajustar ancho de columnas
-const anchos = Object.keys(dataParaExportar[0] || {}).map(key => ({
-  // Agregamos 'as any' para que TypeScript nos deje acceder dinámicamente
-  wch: Math.max(key.length, ...dataParaExportar.map(row => (row as any)[key]?.toString().length ?? 0)) + 2
-}));
-    ws['!cols'] = anchos;
-
-
-    const wb: XLSX.WorkBook = XLSX.utils.book_new();
+    const ws: XLSX.WorkSheet = XLSX.utils.json_to_sheet(data);
+    // Ajuste de ancho de columnas corregido
+    if (data.length > 0) {
+      const keys = Object.keys(data[0]);
+      ws['!cols'] = keys.map(key => ({
+        wch: Math.max(key.length, ...data.map(row => (row as any)[key]?.toString().length ?? 0)) + 2
+      }));
+    }
+    const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
-
-    XLSX.writeFile(wb, 'Inventario_Productos.xlsx');
-    this.registrarMovimiento('Se exportó el inventario a Excel', 'SISTEMA');
-  }
-
-  // --- Simulación de recarga ---
-  recargarDatos(): Observable<boolean> {
-    this.productosSubject.next(this.productosSubject.getValue());
-    this.proveedoresSubject.next(this.proveedoresSubject.getValue());
-    return of(true).pipe(delay(500));
+    XLSX.writeFile(wb, 'Inventario_Completo.xlsx');
   }
 }
