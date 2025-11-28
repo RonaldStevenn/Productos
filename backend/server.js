@@ -116,6 +116,14 @@ app.post('/api/kardex', (req, res) => {
   });
 });
 
+// DELETE /api/kardex - Borrar todo el historial (Truncar tabla)
+app.delete('/api/kardex', (req, res) => {
+  // Usamos TRUNCATE para reiniciar también los IDs autoincrementables, o DELETE para solo borrar datos
+  db.query('DELETE FROM kardex', (err, result) => {
+    if (err) return res.status(500).send(err);
+    res.status(204).send(); // 204 = Éxito sin contenido
+  });
+});
 
 // Iniciar el servidor
 app.listen(port, () => {

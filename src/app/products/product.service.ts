@@ -10,7 +10,7 @@ import * as XLSX from 'xlsx';
 export class ProductService {
   private apiUrl = 'http://localhost:3000/api'; // Conexión al Backend
 
-  // Estado en memoria para la vista
+  // Stores en memoria para la vista (se actualizan automáticamente tras cada petición)
   private productosSubject = new BehaviorSubject<Producto[]>([]);
   public productos$ = this.productosSubject.asObservable();
 
@@ -21,10 +21,10 @@ export class ProductService {
   public movimientos$ = this.movimientosSubject.asObservable();
 
   constructor(private http: HttpClient) {
-    this.recargarDatos().subscribe(); // Carga inicial
+    this.recargarDatos().subscribe(); // Carga inicial de datos reales
   }
 
-  // --- CARGA DE DATOS DESDE BD ---
+  // === CARGA DE DATOS DESDE MYSQL ===
   recargarDatos(): Observable<boolean> {
     // 1. Cargar Proveedores
     this.http.get<Proveedor[]>(`${this.apiUrl}/proveedores`).subscribe(data => {
@@ -33,11 +33,12 @@ export class ProductService {
 
     // 2. Cargar Kardex (Historial)
     this.http.get<any[]>(`${this.apiUrl}/kardex`).subscribe(data => {
-      // Convertir la fecha de texto (MySQL) a Objeto Date (Angular)
+      // Convertir fecha de texto a Objeto Date para que Angular la entienda
       const movimientos = data.map(m => ({ ...m, fecha: new Date(m.fecha) }));
       this.movimientosSubject.next(movimientos);
     });
-    // 3. Cargar Productos (Mapeando nombres de BD a Angular)
+
+    // 3. Cargar Productos (Traduciendo nombres de columna)
     return this.http.get<any[]>(`${this.apiUrl}/productos`).pipe(
       map(dbProducts => dbProducts.map(p => this.mapToClient(p))),
       tap(productos => this.productosSubject.next(productos)),
@@ -46,8 +47,6 @@ export class ProductService {
   }
 
   // --- TRADUCTORES (MySQL <-> Angular) ---
-  // MySQL usa guiones bajos (costo_compra), Angular usa camelCase (costoCompra)
-  
   private mapToClient(dbData: any): Producto {
     return {
       id: dbData.id,
@@ -74,7 +73,7 @@ export class ProductService {
     };
   }
 
-  // --- PRODUCTOS ---
+  // === PRODUCTOS (CONECTADO A BD) ===
 
   getProductos(): Observable<Producto[]> { return this.productos$; }
 
@@ -83,7 +82,6 @@ export class ProductService {
     return this.http.post(`${this.apiUrl}/productos`, datos).pipe(
       tap(() => {
         this.recargarDatos().subscribe();
-        // Registrar en Kardex
         this.registrarMovimiento(`Creado: ${producto.nombre}`, 'ENTRADA', producto.stock);
       })
     );
@@ -108,64 +106,69 @@ export class ProductService {
     );
   }
 
-  // --- PROVEEDORES ---
+  // === PROVEEDORES (AHORA SÍ CONECTADO A BD) ===
 
   getProveedores() { return this.proveedores$; }
 
   addProveedor(prov: any) {
-    this.http.post(`${this.apiUrl}/proveedores`, prov).subscribe(() => this.recargarDatos().subscribe());
+    // Enviamos al backend
+    this.http.post(`${this.apiUrl}/proveedores`, prov).subscribe(() => {
+      this.recargarDatos().subscribe(); // Actualizamos la lista visual
+      this.registrarMovimiento(`Nuevo proveedor: ${prov.nombre}`, 'SISTEMA');
+    });
   }
 
   updateProveedor(prov: Proveedor) {
-    this.http.put(`${this.apiUrl}/proveedores/${prov.id}`, prov).subscribe(() => this.recargarDatos().subscribe());
+    this.http.put(`${this.apiUrl}/proveedores/${prov.id}`, prov).subscribe(() => {
+      this.recargarDatos().subscribe();
+    });
   }
 
   deleteProveedor(id: string | number) {
-    this.http.delete(`${this.apiUrl}/proveedores/${id}`).subscribe(() => this.recargarDatos().subscribe());
-  }
-
-  // --- KARDEX E HISTORIAL ---
-
-// --- CORRECCIÓN KARDEX ---
-  private registrarMovimiento(descripcion: string, tipo: string, cantidad: number = 0) {
-    // 1. Creamos el objeto SIN fecha (MySQL la pondrá automáticamente)
-    const movimientoParaBD = { descripcion, tipo, cantidad };
-
-    // 2. Enviamos al Backend
-    this.http.post(`${this.apiUrl}/kardex`, movimientoParaBD).subscribe({
-      next: (resp: any) => {
-        // 3. Al recibir respuesta, actualizamos la lista visualmente
-        // Aquí sí agregamos la fecha local para que lo veas sin recargar
-        const movimientoVisual = { 
-          ...movimientoParaBD, 
-          id: resp.id, 
-          fecha: new Date() // Fecha visual instantánea
-        };
-        
-        const actual = this.movimientosSubject.getValue();
-        this.movimientosSubject.next([movimientoVisual as any, ...actual]);
-      },
-      error: (err) => console.error('Error guardando historial:', err)
+    this.http.delete(`${this.apiUrl}/proveedores/${id}`).subscribe(() => {
+      this.recargarDatos().subscribe();
+      this.registrarMovimiento('Proveedor eliminado', 'SISTEMA');
     });
   }
-// --- Agrega esta función que falta ---
-  limpiarKardex() {
-    // Limpiamos la lista local visualmente
-    this.movimientosSubject.next([]);
-    
-    // Opcional: Si quisieras borrarlo de la BD, descomenta la siguiente línea:
-    // this.http.delete(`${this.apiUrl}/kardex`).subscribe();
 
-    this.registrarMovimiento('Historial depurado visualmente', 'SISTEMA');
+  // === KARDEX E HISTORIAL ===
+
+  private registrarMovimiento(descripcion: string, tipo: string, cantidad: number = 0) {
+    // Enviamos sin fecha (MySQL la pone automática)
+    const mov = { descripcion, tipo, cantidad };
+    this.http.post(`${this.apiUrl}/kardex`, mov).subscribe(() => {
+      // Actualizamos visualmente sin esperar recarga completa
+      this.recargarDatos().subscribe(); 
+    });
   }
-  // --- EXPORTAR EXCEL ---
+
+limpiarKardex() {
+    // 1. Llamamos al endpoint DELETE del backend
+    this.http.delete(`${this.apiUrl}/kardex`).subscribe({
+      next: () => {
+        // 2. Si se borró bien en BD, limpiamos la lista visual
+        this.movimientosSubject.next([]);
+        
+        // 3. Agregamos un registro de sistema indicando la limpieza
+        this.registrarMovimiento('Historial depurado completamente', 'SISTEMA');
+        
+        // Opcional: Mostrar una alerta pequeña si usas SweetAlert aquí o dejar que el componente lo maneje
+      },
+      error: (err) => console.error('Error al borrar historial:', err)
+    });
+  }
+
+  // === EXPORTAR EXCEL ===
   exportarExcel() {
     const data = this.productosSubject.getValue().map(p => {
+      // Usamos '==' para comparar ID numérico con string sin problemas
       const prov = this.proveedoresSubject.getValue().find(pr => pr.id == p.proveedorId)?.nombre || 'N/A';
+      const ganancia = (p.precioVenta - p.costoCompra) * p.stock;
+
       return {
         'ID': p.id, 'Producto': p.nombre, 'Categoría': p.categoria, 'Proveedor': prov,
-        'Stock': p.stock, 'Costo': p.costoCompra, 'Venta': p.precioVenta,
-        'Ganancia Total': (p.precioVenta - p.costoCompra) * p.stock
+        'Stock': p.stock, 'Costo ($)': p.costoCompra, 'Venta ($)': p.precioVenta,
+        'Ganancia Total ($)': ganancia
       };
     });
 
@@ -178,6 +181,6 @@ export class ProductService {
     }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
-    XLSX.writeFile(wb, 'Inventario.xlsx');
+    XLSX.writeFile(wb, 'Inventario_Gestion.xlsx');
   }
 }
