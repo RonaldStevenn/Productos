@@ -8,9 +8,9 @@ import * as XLSX from 'xlsx';
   providedIn: 'root'
 })
 export class ProductService {
-  private apiUrl = 'http://localhost:3000/api'; // Asegúrate que tu backend corre aquí
+  private apiUrl = 'http://localhost:3000/api'; // Conexión al Backend
 
-  // Stores en memoria
+  // Estado en memoria para la vista
   private productosSubject = new BehaviorSubject<Producto[]>([]);
   public productos$ = this.productosSubject.asObservable();
 
@@ -21,78 +21,77 @@ export class ProductService {
   public movimientos$ = this.movimientosSubject.asObservable();
 
   constructor(private http: HttpClient) {
-    this.recargarDatos().subscribe(); // Importante: Iniciar carga de datos
+    this.recargarDatos().subscribe(); // Carga inicial
   }
 
-  // === CARGA DE DATOS ===
+  // --- CARGA DE DATOS DESDE BD ---
   recargarDatos(): Observable<boolean> {
-    // Cargar Proveedores
-    this.http.get<any[]>(`${this.apiUrl}/proveedores`).subscribe(data => {
+    // 1. Cargar Proveedores
+    this.http.get<Proveedor[]>(`${this.apiUrl}/proveedores`).subscribe(data => {
       this.proveedoresSubject.next(data);
     });
 
-    // Cargar Kardex
+    // 2. Cargar Kardex (Historial)
     this.http.get<any[]>(`${this.apiUrl}/kardex`).subscribe(data => {
-      this.movimientosSubject.next(data);
+      // Convertir la fecha de texto (MySQL) a Objeto Date (Angular)
+      const movimientos = data.map(m => ({ ...m, fecha: new Date(m.fecha) }));
+      this.movimientosSubject.next(movimientos);
     });
-
-    // Cargar Productos (y mapear nombres de BD a Frontend)
+    // 3. Cargar Productos (Mapeando nombres de BD a Angular)
     return this.http.get<any[]>(`${this.apiUrl}/productos`).pipe(
-      map(dbData => dbData.map(p => this.mapToClient(p))),
+      map(dbProducts => dbProducts.map(p => this.mapToClient(p))),
       tap(productos => this.productosSubject.next(productos)),
       map(() => true)
     );
   }
 
-  // --- MAPEOS (Traducción Angular <-> MySQL) ---
+  // --- TRADUCTORES (MySQL <-> Angular) ---
+  // MySQL usa guiones bajos (costo_compra), Angular usa camelCase (costoCompra)
   
-  // De MySQL (snake_case) a Angular (camelCase)
-  private mapToClient(data: any): Producto {
+  private mapToClient(dbData: any): Producto {
     return {
-      id: data.id,
-      nombre: data.nombre,
-      proveedorId: data.proveedor_id, // Ojo al guion bajo
-      costoCompra: data.costo_compra,
-      precioVenta: data.precio_venta,
-      stock: data.stock,
-      categoria: data.categoria,
-      imagenUrl: data.imagen_url,
-      ganancia: (data.precio_venta - data.costo_compra) * data.stock
+      id: dbData.id,
+      nombre: dbData.nombre,
+      proveedorId: dbData.proveedor_id,
+      costoCompra: dbData.costo_compra,
+      precioVenta: dbData.precio_venta,
+      stock: dbData.stock,
+      categoria: dbData.categoria,
+      imagenUrl: dbData.imagen_url,
+      ganancia: (dbData.precio_venta - dbData.costo_compra) * dbData.stock
     };
   }
 
-  // De Angular (camelCase) a MySQL (snake_case)
-  private mapToServer(producto: any): any {
+  private mapToServer(prod: any): any {
     return {
-      nombre: producto.nombre,
-      proveedor_id: producto.proveedorId,
-      costo_compra: producto.costoCompra,
-      precio_venta: producto.precioVenta,
-      stock: producto.stock,
-      categoria: producto.categoria,
-      imagen_url: producto.imagenUrl
+      nombre: prod.nombre,
+      proveedor_id: prod.proveedorId,
+      costo_compra: prod.costoCompra,
+      precio_venta: prod.precioVenta,
+      stock: prod.stock,
+      categoria: prod.categoria,
+      imagen_url: prod.imagenUrl
     };
   }
 
-  // === MÉTODOS CRUD (Con traducción) ===
+  // --- PRODUCTOS ---
 
-  getProductos(): Observable<Producto[]> {
-    return this.productos$;
-  }
+  getProductos(): Observable<Producto[]> { return this.productos$; }
 
   addProducto(producto: any): Observable<any> {
-    const datosBD = this.mapToServer(producto); // Traducir antes de enviar
-    return this.http.post(`${this.apiUrl}/productos`, datosBD).pipe(
+    const datos = this.mapToServer(producto);
+    return this.http.post(`${this.apiUrl}/productos`, datos).pipe(
       tap(() => {
-        this.recargarDatos().subscribe(); // Actualizar lista visual
+        this.recargarDatos().subscribe();
+        // Registrar en Kardex
         this.registrarMovimiento(`Creado: ${producto.nombre}`, 'ENTRADA', producto.stock);
       })
     );
   }
 
   updateProducto(producto: Producto): Observable<any> {
-    const datosBD = this.mapToServer(producto);
-    return this.http.put(`${this.apiUrl}/productos/${producto.id}`, datosBD).pipe(
+    const datos = this.mapToServer(producto);
+    return this.http.put(`${this.apiUrl}/productos/${producto.id}`, datos).pipe(
       tap(() => {
         this.recargarDatos().subscribe();
         this.registrarMovimiento(`Editado: ${producto.nombre}`, 'SISTEMA');
@@ -109,7 +108,8 @@ export class ProductService {
     );
   }
 
-  // === PROVEEDORES ===
+  // --- PROVEEDORES ---
+
   getProveedores() { return this.proveedores$; }
 
   addProveedor(prov: any) {
@@ -124,21 +124,43 @@ export class ProductService {
     this.http.delete(`${this.apiUrl}/proveedores/${id}`).subscribe(() => this.recargarDatos().subscribe());
   }
 
-  // === KARDEX & EXCEL ===
+  // --- KARDEX E HISTORIAL ---
+
+// --- CORRECCIÓN KARDEX ---
   private registrarMovimiento(descripcion: string, tipo: string, cantidad: number = 0) {
-    this.http.post(`${this.apiUrl}/kardex`, { descripcion, tipo, cantidad, fecha: new Date() }).subscribe();
-  }
+    // 1. Creamos el objeto SIN fecha (MySQL la pondrá automáticamente)
+    const movimientoParaBD = { descripcion, tipo, cantidad };
 
+    // 2. Enviamos al Backend
+    this.http.post(`${this.apiUrl}/kardex`, movimientoParaBD).subscribe({
+      next: (resp: any) => {
+        // 3. Al recibir respuesta, actualizamos la lista visualmente
+        // Aquí sí agregamos la fecha local para que lo veas sin recargar
+        const movimientoVisual = { 
+          ...movimientoParaBD, 
+          id: resp.id, 
+          fecha: new Date() // Fecha visual instantánea
+        };
+        
+        const actual = this.movimientosSubject.getValue();
+        this.movimientosSubject.next([movimientoVisual as any, ...actual]);
+      },
+      error: (err) => console.error('Error guardando historial:', err)
+    });
+  }
+// --- Agrega esta función que falta ---
   limpiarKardex() {
-    // Si implementaste el endpoint DELETE en el backend, descomenta la siguiente línea:
-    // this.http.delete(`${this.apiUrl}/kardex`).subscribe(() => this.movimientosSubject.next([]));
-    this.movimientosSubject.next([]); // Limpieza visual temporal
-  }
+    // Limpiamos la lista local visualmente
+    this.movimientosSubject.next([]);
+    
+    // Opcional: Si quisieras borrarlo de la BD, descomenta la siguiente línea:
+    // this.http.delete(`${this.apiUrl}/kardex`).subscribe();
 
+    this.registrarMovimiento('Historial depurado visualmente', 'SISTEMA');
+  }
+  // --- EXPORTAR EXCEL ---
   exportarExcel() {
     const data = this.productosSubject.getValue().map(p => {
-      // Forzamos 'any' para evitar errores de tipado estricto en el reduce
-      const pAny = p as any;
       const prov = this.proveedoresSubject.getValue().find(pr => pr.id == p.proveedorId)?.nombre || 'N/A';
       return {
         'ID': p.id, 'Producto': p.nombre, 'Categoría': p.categoria, 'Proveedor': prov,
@@ -148,15 +170,14 @@ export class ProductService {
     });
 
     const ws: XLSX.WorkSheet = XLSX.utils.json_to_sheet(data);
-    // Ajuste de ancho de columnas corregido
     if (data.length > 0) {
       const keys = Object.keys(data[0]);
       ws['!cols'] = keys.map(key => ({
-        wch: Math.max(key.length, ...data.map(row => (row as any)[key]?.toString().length ?? 0)) + 2
+        wch: Math.max(key.length, ...data.map(row => (row as any)[key]?.toString().length ?? 0)) + 5
       }));
     }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Inventario');
-    XLSX.writeFile(wb, 'Inventario_Completo.xlsx');
+    XLSX.writeFile(wb, 'Inventario.xlsx');
   }
 }

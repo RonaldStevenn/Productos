@@ -5,12 +5,10 @@ import { provideHttpClient, withFetch } from '@angular/common/http';
 
 export const appConfig: ApplicationConfig = {
   providers: [
-    // ✅ Usamos Zoneless (sin Zone.js) para que coincida con tu proyecto
-    provideZonelessChangeDetection(),
+    // ✅ CORRECCIÓN: Usamos 'Zoneless' para evitar el error de Zone.js
+    provideZonelessChangeDetection(), 
     
     provideRouter(routes),
-    
-    // Mantenemos la conexión HTTP necesaria para el backend
     provideHttpClient(withFetch())
   ]
 };
